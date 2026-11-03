@@ -1,0 +1,38 @@
+{
+  "benchmark": "06_data_hazards",
+  "description": "Comprehensive hazard detection and forwarding verification covering EX/MEM->EX, MEM/WB->EX, double-operand forwarding, hazard unit priority, chained dependencies, and load-use pipeline stalls with bubble insertion.",
+  "min_cycles": 40,
+  "expected_registers": {
+    "x1": 10,
+    "x2": 15,
+    "x3": 20,
+    "x4": 25,
+    "x5": 30,
+    "x6": 40,
+    "x7": 70,
+    "x8": 200,
+    "x9": 200,
+    "x10": 1,
+    "x11": 2,
+    "x12": 4,
+    "x13": 8,
+    "x14": 16,
+    "x15": 0,
+    "x16": 888,
+    "x17": 888,
+    "x18": 889,
+    "x19": 1777
+  },
+  "expected_memory": {
+    "0": 888
+  },
+  "features_tested": [
+    "EX/MEM to EX forwarding (distance 1)",
+    "MEM/WB to EX forwarding (distance 2)",
+    "Double operand simultaneous forwarding (rs1 from MEM/WB, rs2 from EX/MEM)",
+    "Forwarding priority (EX/MEM taking precedence over MEM/WB on same destination register)",
+    "Chained continuous back-to-back dependency resolution",
+    "Load-use hazard detection inserting control stall bubble",
+    "Execution accuracy without pipeline stalls on pure ALU forwarding"
+  ]
+}

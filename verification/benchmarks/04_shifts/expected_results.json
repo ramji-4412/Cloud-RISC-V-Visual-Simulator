@@ -1,0 +1,35 @@
+{
+  "benchmark": "04_shifts",
+  "description": "Comprehensive shift instruction verification covering SLL, SRL, SRA, SLLI, SRLI, SRAI across boundary shift amounts (0, 1, 31), sign-bit preservation vs zero-fill, and 5-bit register shift amount masking.",
+  "min_cycles": 35,
+  "expected_registers": {
+    "x1": 1,
+    "x2": 4294967295,
+    "x3": 16,
+    "x4": 2147483648,
+    "x5": 1,
+    "x6": 4294967295,
+    "x7": 1073741824,
+    "x8": 3221225472,
+    "x9": 2147483648,
+    "x10": 2147483648,
+    "x11": 2147483648,
+    "x12": 5,
+    "x13": 32,
+    "x14": 33554432,
+    "x15": 4261412864,
+    "x16": 36,
+    "x17": 16,
+    "x18": 134217728,
+    "x19": 4160749568
+  },
+  "expected_memory": {},
+  "features_tested": [
+    "SLLI logical left shift by immediate",
+    "SRLI logical right shift (zero-extending)",
+    "SRAI arithmetic right shift (sign-extending MSB)",
+    "Shift by boundary amounts 0, 1, 31",
+    "SLL, SRL, SRA register-based shifts",
+    "Register shift amount masking to 5 bits (rs2[4:0])"
+  ]
+}

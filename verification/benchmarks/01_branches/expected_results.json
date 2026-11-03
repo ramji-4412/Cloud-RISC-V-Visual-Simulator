@@ -1,0 +1,35 @@
+{
+  "benchmark": "01_branches",
+  "description": "Comprehensive branch verification covering BEQ, BNE, BLT, BGE, BLTU, BGEU across taken and not-taken conditions, signed vs unsigned comparisons, and pipeline flushing.",
+  "min_cycles": 90,
+  "expected_registers": {
+    "x1": 5,
+    "x2": 5,
+    "x3": 7,
+    "x4": 4294967291,
+    "x10": 1,
+    "x11": 3,
+    "x12": 3,
+    "x13": 5,
+    "x14": 5,
+    "x15": 7,
+    "x16": 7,
+    "x17": 9,
+    "x18": 11,
+    "x19": 13,
+    "x20": 15,
+    "x21": 17,
+    "x22": 19
+  },
+  "expected_memory": {},
+  "features_tested": [
+    "BEQ taken and not taken",
+    "BNE taken and not taken",
+    "BLT signed taken and not taken",
+    "BGE signed taken and not taken",
+    "BLTU unsigned taken and not taken",
+    "BGEU unsigned taken and not taken",
+    "Pipeline flush on taken branches (squash wrong-path instructions)",
+    "Correct sequential fall-through on not-taken branches"
+  ]
+}

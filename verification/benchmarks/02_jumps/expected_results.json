@@ -1,0 +1,28 @@
+{
+  "benchmark": "02_jumps",
+  "description": "Comprehensive jump verification covering JAL, JALR, link register (PC+4) writing, indirect target calculation (rs1 + imm), function call/return sequences, and backward jump loops.",
+  "min_cycles": 80,
+  "expected_registers": {
+    "x1": 8,
+    "x2": 1,
+    "x3": 0,
+    "x4": 64,
+    "x5": 52,
+    "x10": 42,
+    "x11": 43,
+    "x12": 20,
+    "x13": 30,
+    "x14": 77,
+    "x15": 88
+  },
+  "expected_memory": {},
+  "features_tested": [
+    "JAL with link register write (PC+4)",
+    "JAL with discard (x0)",
+    "JALR return sequence (jalr x0, x1, 0)",
+    "JALR with base register and immediate offset",
+    "JALR link register write (PC+4)",
+    "Pipeline flush on jump redirection",
+    "Loop control with backward branch/jump"
+  ]
+}

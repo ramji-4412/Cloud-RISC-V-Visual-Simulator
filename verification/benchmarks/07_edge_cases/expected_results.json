@@ -1,0 +1,34 @@
+{
+  "benchmark": "07_edge_cases",
+  "description": "Comprehensive edge-case verification covering hardwired x0 zero semantics, immediate range boundaries (+2047, -2048), two's complement overflow and underflow wrapping, unaligned memory access safety, and AUIPC PC-relative addressing.",
+  "min_cycles": 35,
+  "expected_registers": {
+    "x1": 0,
+    "x2": 2047,
+    "x3": 4294965248,
+    "x4": 2147483648,
+    "x5": 2147483647,
+    "x6": 2147483648,
+    "x7": 0,
+    "x8": 4294967295,
+    "x9": 291,
+    "x10": 999,
+    "x11": 0,
+    "x12": 291,
+    "x13": 4156
+  },
+  "expected_memory": {
+    "0": 291
+  },
+  "features_tested": [
+    "Hardwired x0 discard on register write",
+    "x0 evaluation to zero on register read",
+    "Sign extension of maximum positive immediate (+2047)",
+    "Sign extension of maximum negative immediate (-2048)",
+    "32-bit two's complement addition overflow wrapping",
+    "32-bit two's complement subtraction underflow wrapping",
+    "Unaligned memory store ignored without corrupting memory",
+    "Unaligned memory load returns zero safely",
+    "AUIPC computes current PC plus upper immediate"
+  ]
+}

@@ -1,0 +1,39 @@
+{
+  "benchmark": "05_memory",
+  "description": "Comprehensive memory operation verification covering SW and LW with sequential word addresses, data retrieval into registers, memory overwriting, and negative immediate offsets.",
+  "min_cycles": 35,
+  "expected_registers": {
+    "x1": 0,
+    "x2": 100,
+    "x3": 200,
+    "x4": 300,
+    "x5": 400,
+    "x6": 500,
+    "x7": 999,
+    "x8": 32,
+    "x9": 777,
+    "x10": 100,
+    "x11": 200,
+    "x12": 300,
+    "x13": 400,
+    "x14": 500,
+    "x15": 999,
+    "x16": 777
+  },
+  "expected_memory": {
+    "0": 100,
+    "4": 200,
+    "8": 999,
+    "12": 400,
+    "16": 500,
+    "24": 777
+  },
+  "features_tested": [
+    "SW store word to 32-bit aligned addresses",
+    "LW load word from 32-bit aligned addresses",
+    "Sequential stores and loads across consecutive addresses",
+    "Overwriting existing memory locations",
+    "Negative immediate offsets with non-zero base register",
+    "Memory persistence across pipeline cycles"
+  ]
+}
