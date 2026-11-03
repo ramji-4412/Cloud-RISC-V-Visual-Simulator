@@ -51,6 +51,6 @@ ENV USE_WSL=0 \
 
 EXPOSE 8000
 
-# Start Uvicorn bound to 0.0.0.0 and dynamic $PORT (compatible with Render, Heroku, Docker)
-CMD ["sh", "-c", "uvicorn backend.app.main:app --host 0.0.0.0 --port ${PORT:-8000}"]
+# Start Uvicorn bound to 0.0.0.0 and dynamic $PORT with exec for clean signal handling & single-worker enforcement
+CMD ["sh", "-c", "exec uvicorn backend.app.main:app --host 0.0.0.0 --port ${PORT:-8000} --workers 1"]
 

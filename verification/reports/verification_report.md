@@ -1,6 +1,6 @@
 # Cloud RISC-V Visual Simulator — Hardware Verification Report
 
-**Generated:** 2026-11-03 11:09:00  
+**Generated:** 2026-11-03 12:23:35  
 **Verification Engine:** Verilator SystemVerilog C++ RTL Simulation (`Vriscv_sim_top`)  
 **Architecture:** RV32I 32-bit RISC-V (5-Stage Pipelined: IF, ID, EX, MEM, WB)  
 **Overall Status:** `PASS` (100% Verified)  
@@ -13,7 +13,7 @@
 | **Total Assertions** | 130 / 130 Passed (100.0%) |
 | **Register Validations** | 122 / 122 Passed |
 | **Data Memory Validations** | 8 / 8 Passed |
-| **Total Wall-Clock Time** | 1.14 seconds |
+| **Total Wall-Clock Time** | 0.97 seconds |
 
 ## Verification Suite Results Table
 

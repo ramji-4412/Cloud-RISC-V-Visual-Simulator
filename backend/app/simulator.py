@@ -74,7 +74,7 @@ class SimulatorManager:
 
     def __init__(self):
         self._proc: Optional[subprocess.Popen] = None
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
         self._stderr_reader: Optional[threading.Thread] = None
         self._stderr_lines: list = []
         self._stderr_stop = False
@@ -83,15 +83,49 @@ class SimulatorManager:
     # Process lifecycle
     # ------------------------------------------------------------------
 
+    @property
+    def pid(self) -> Optional[int]:
+        """Return the PID of the simulation subprocess if running."""
+        with self._lock:
+            if self._proc is not None and self._proc.poll() is None:
+                return self._proc.pid
+            return None
+
+    def _cleanup_dead_process(self):
+        """Internal helper to clean up a terminated subprocess without acquiring lock."""
+        self._stderr_stop = True
+        if self._proc is not None:
+            try:
+                self._proc.poll()
+            except Exception:
+                pass
+            self._proc = None
+        if self._stderr_reader and self._stderr_reader.is_alive():
+            try:
+                self._stderr_reader.join(timeout=0.5)
+            except Exception:
+                pass
+            self._stderr_reader = None
+
     def start(self) -> Dict[str, Any]:
-        """Start the persistent C++ simulation engine via wsl.exe."""
+        """Start the persistent C++ simulation engine via wsl.exe or native binary.
+
+        Idempotent:
+        - If already running and healthy, returns current process information.
+        - If a previous process terminated or failed, cleans it up and restarts cleanly.
+        """
         with self._lock:
             if self._proc is not None and self._proc.poll() is None:
                 return {
                     "connected": True,
                     "engine": "Verilator",
                     "message": "Simulator already running.",
+                    "pid": self._proc.pid,
                 }
+
+            # If previous process terminated, clean it up before restarting
+            if self._proc is not None:
+                self._cleanup_dead_process()
 
             try:
                 cmd = (
@@ -111,6 +145,7 @@ class SimulatorManager:
                 # Start a background thread to drain stderr so the pipe
                 # never fills up and blocks the simulator process.
                 self._stderr_stop = False
+                self._stderr_lines = []
                 self._stderr_reader = threading.Thread(
                     target=self._drain_stderr, daemon=True
                 )
@@ -119,46 +154,90 @@ class SimulatorManager:
                 # Verify the process is alive and responding.
                 status = self._send_raw({"command": "status"})
                 if status.get("status") != "ok":
+                    stderr_diag = " | ".join(self._stderr_lines[-5:])
                     self.stop()
                     return {
                         "connected": False,
                         "engine": "Verilator",
-                        "message": f"Simulator did not respond: {status}",
+                        "message": f"Simulator did not respond: {status}. Stderr: {stderr_diag}",
+                        "pid": None,
                     }
 
                 return {
                     "connected": True,
                     "engine": "Verilator",
                     "message": "Simulator started and responding.",
+                    "pid": self._proc.pid,
                 }
 
             except Exception as exc:
-                self._proc = None
+                self._stderr_stop = True
+                if self._proc is not None:
+                    try:
+                        if self._proc.poll() is None:
+                            self._proc.kill()
+                            self._proc.wait(timeout=1)
+                    except Exception:
+                        pass
+                    for pipe in (getattr(self._proc, "stdin", None), getattr(self._proc, "stdout", None), getattr(self._proc, "stderr", None)):
+                        if pipe is not None:
+                            try:
+                                pipe.close()
+                            except Exception:
+                                pass
+                    self._proc = None
+
+                if self._stderr_reader is not None and self._stderr_reader.is_alive():
+                    try:
+                        self._stderr_reader.join(timeout=1)
+                    except Exception:
+                        pass
+                    self._stderr_reader = None
+
+                self._stderr_lines = []
+
                 return {
                     "connected": False,
                     "engine": "Verilator",
                     "message": f"Failed to start simulator: {exc}",
+                    "pid": None,
                 }
 
     def stop(self) -> Dict[str, Any]:
-        """Stop the simulation process cleanly."""
+        """Stop the simulation process cleanly without leaving orphan subprocesses."""
         with self._lock:
             self._stderr_stop = True
 
             if self._proc is not None:
                 try:
-                    # Send quit command first for clean shutdown.
-                    self._proc.stdin.write("{\"command\":\"quit\"}\n")
-                    self._proc.stdin.flush()
-                    self._proc.wait(timeout=5)
+                    if self._proc.poll() is None:
+                        # Send quit command first for clean shutdown.
+                        try:
+                            self._proc.stdin.write("{\"command\":\"quit\"}\n")
+                            self._proc.stdin.flush()
+                            self._proc.wait(timeout=3)
+                        except Exception:
+                            pass
+                        if self._proc.poll() is None:
+                            self._proc.terminate()
+                            self._proc.wait(timeout=3)
                 except Exception:
-                    try:
-                        self._proc.terminate()
-                        self._proc.wait(timeout=5)
-                    except Exception:
-                        self._proc.kill()
+                    pass
+                finally:
+                    if self._proc is not None and self._proc.poll() is None:
+                        try:
+                            self._proc.kill()
+                            self._proc.wait(timeout=2)
+                        except Exception:
+                            pass
+                    self._proc = None
 
-                self._proc = None
+            if self._stderr_reader and self._stderr_reader.is_alive():
+                try:
+                    self._stderr_reader.join(timeout=1)
+                except Exception:
+                    pass
+                self._stderr_reader = None
 
             return {
                 "connected": False,
@@ -197,39 +276,42 @@ class SimulatorManager:
     def _send_raw(self, command: Dict[str, Any]) -> Dict[str, Any]:
         """Send one JSON command and return the parsed JSON response.
 
+        Thread-safe: Protected by reentrant self._lock across writing
+        the command and reading its corresponding response line.
         Raises RuntimeError if the process is not running or the
         response is invalid.
         """
-        if self._proc is None or self._proc.poll() is not None:
-            raise RuntimeError("Simulator process is not running")
+        with self._lock:
+            if self._proc is None or self._proc.poll() is not None:
+                raise RuntimeError("Simulator process is not running")
 
-        stdin = self._proc.stdin
-        stdout = self._proc.stdout
+            stdin = self._proc.stdin
+            stdout = self._proc.stdout
 
-        if stdin is None or stdout is None:
-            raise RuntimeError("Simulator process pipes are not open")
+            if stdin is None or stdout is None:
+                raise RuntimeError("Simulator process pipes are not open")
 
-        line = json.dumps(command)
-        stdin.write(line + "\n")
-        stdin.flush()
+            line = json.dumps(command)
+            stdin.write(line + "\n")
+            stdin.flush()
 
-        response_line = stdout.readline()
-        if not response_line:
-            raise RuntimeError("Simulator process closed stdout")
+            response_line = stdout.readline()
+            if not response_line:
+                raise RuntimeError("Simulator process closed stdout")
 
-        try:
-            return json.loads(response_line)
-        except json.JSONDecodeError:
-            # Skip non-JSON diagnostic lines and try again.
-            for _ in range(10):
-                response_line = stdout.readline()
-                if not response_line:
-                    raise RuntimeError("Simulator process closed stdout")
-                try:
-                    return json.loads(response_line)
-                except json.JSONDecodeError:
-                    continue
-            raise RuntimeError(f"Invalid JSON response: {response_line!r}")
+            try:
+                return json.loads(response_line)
+            except json.JSONDecodeError:
+                # Skip non-JSON diagnostic lines and try again.
+                for _ in range(10):
+                    response_line = stdout.readline()
+                    if not response_line:
+                        raise RuntimeError("Simulator process closed stdout")
+                    try:
+                        return json.loads(response_line)
+                    except json.JSONDecodeError:
+                        continue
+                raise RuntimeError(f"Invalid JSON response: {response_line!r}")
 
     def get_status(self) -> Dict[str, Any]:
         """Return simulator status."""

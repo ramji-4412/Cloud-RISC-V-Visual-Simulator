@@ -30,12 +30,53 @@ from .schemas import (
 )
 
 from .simulator import simulator_manager
+from contextlib import asynccontextmanager
+import logging
+import os
+
+logger = logging.getLogger("riscv_backend")
+logging.basicConfig(level=logging.INFO)
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Startup: Launch the persistent Verilator C++ simulation process
+    logger.info("Verilator startup: initializing persistent simulation engine...")
+    started = False
+    try:
+        try:
+            res = simulator_manager.start()
+        except Exception as exc:
+            logger.exception(f"Unexpected exception during Verilator simulator startup: {exc}")
+            raise
+
+        if not res.get("connected"):
+            diag = res.get("message", "Unknown error")
+            logger.error(f"Verilator simulation engine failed to start: {diag}")
+            raise RuntimeError(f"Verilator simulation engine failed to start: {diag}")
+
+        started = True
+        pid = res.get("pid") or simulator_manager.pid
+        logger.info(
+            f"Verilator simulation engine successfully started (PID: {pid}). Engine: {res.get('engine')}"
+        )
+        yield
+    finally:
+        if started:
+            # Shutdown: Cleanly terminate the simulator process
+            logger.info("Verilator shutdown: stopping simulation engine...")
+            try:
+                simulator_manager.stop()
+                logger.info("Verilator simulation engine stopped successfully.")
+            except Exception as exc:
+                logger.exception(f"Error during Verilator simulator shutdown: {exc}")
 
 
 app = FastAPI(
     title="Cloud RISC-V Visual Simulator API",
     description="Backend API for the RV32I pipeline simulator.",
-    version="1.0.0"
+    version="1.0.0",
+    lifespan=lifespan,
 )
 
 
