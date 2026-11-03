@@ -137,16 +137,16 @@ export default function PipelineFlowView({
                     onSelectStage?.(cfg.key);
                     setDetailStage(cfg.key);
                   }}
-                  className={`flex-1 min-w-[135px] sm:min-w-[145px] flex flex-col rounded-xl border p-2.5 sm:p-3 cursor-pointer transition-all duration-150 select-none overflow-hidden ${
+                  className={`flex-1 min-w-[125px] sm:min-w-[135px] flex flex-col rounded-xl border p-2 sm:p-2.5 cursor-pointer transition-all duration-150 select-none overflow-hidden ${
                     isSelected
                       ? 'ring-2 ring-cyan-500 shadow-md bg-slate-800 border-cyan-500'
                       : 'bg-slate-900/80 hover:bg-slate-800/60 border-slate-800'
                   }`}
                   title={`Click to inspect Stage ${cfg.key}: ${cfg.name}`}
                 >
-                  {/* Card Header: Stage Name + Status Badge (Aligned & Contained) */}
-                  <div className="flex items-center justify-between gap-1 pb-1.5 border-b border-slate-800 shrink-0 min-w-0">
-                    <div className="flex items-center gap-1.5 min-w-0">
+                  {/* Card Header: Stage Name + Status Badge (Strictly Contained & Aligned) */}
+                  <div className="flex items-center justify-between gap-1 pb-1.5 border-b border-slate-800 shrink-0 w-full overflow-hidden">
+                    <div className="flex items-center gap-1.5 shrink-0">
                       <span
                         className="w-2 h-2 rounded-full shrink-0"
                         style={{ backgroundColor: cfg.color }}
@@ -154,16 +154,14 @@ export default function PipelineFlowView({
                       <span className="text-xs font-bold text-slate-100">
                         {cfg.key}
                       </span>
-                      <span className="text-[10px] text-slate-400 font-medium truncate hidden xl:inline">
-                        {cfg.short}
-                      </span>
                     </div>
 
                     <span
-                      className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[9px] sm:text-[9.5px] font-semibold border shrink-0 ${badge.className}`}
+                      className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[8.5px] sm:text-[9px] font-semibold border max-w-[85px] sm:max-w-[95px] shrink-0 truncate ${badge.className}`}
+                      title={stageData.statusLabel || badge.label}
                     >
                       <StatusIcon className="w-2.5 h-2.5 shrink-0" />
-                      <span>{stageData.statusLabel || badge.label}</span>
+                      <span className="truncate">{stageData.statusLabel || badge.label}</span>
                     </span>
                   </div>
 

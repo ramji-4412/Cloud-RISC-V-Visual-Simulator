@@ -24,6 +24,7 @@ Architecture:
 
 import json
 import os
+import platform
 import subprocess
 import threading
 from typing import Any, Dict, Optional
@@ -41,9 +42,35 @@ class SimulatorManager:
     interleave commands on the same stdin/stdout stream.
     """
 
-    WSL_DISTRO = "Ubuntu"
-    SIM_EXE = "/home/pc/riscv-verilator-build/Vriscv_sim_top"
-    SIM_DIR = "/mnt/d/RISC-V_Project/hardware/sim"
+    WSL_DISTRO = os.getenv("WSL_DISTRO", "Ubuntu")
+
+    # Determine execution mode:
+    # Explicit USE_WSL env var overrides OS detection; otherwise auto-detect Windows host.
+    _env_wsl = os.getenv("USE_WSL")
+    if _env_wsl is not None:
+        USE_WSL = _env_wsl.lower() in ("1", "true", "yes")
+    else:
+        USE_WSL = (platform.system() == "Windows")
+
+    if USE_WSL:
+        SIM_EXE = os.getenv("SIM_EXE", "/home/pc/riscv-verilator-build/Vriscv_sim_top")
+        SIM_DIR = os.getenv("SIM_DIR", "/mnt/d/RISC-V_Project/hardware/sim")
+        TRACE_DIR = os.getenv("TRACE_DIR", "/home/pc/riscv-verilator-build")
+    else:
+        # Native Linux / Docker environment
+        _base_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "../.."))
+        _sim_dir = os.path.join(_base_dir, "hardware", "sim")
+        _candidate_exes = [
+            os.getenv("SIM_EXE", ""),
+            "/app/build/Vriscv_sim_top",
+            os.path.join(_base_dir, "build", "Vriscv_sim_top"),
+            os.path.join(_sim_dir, "build", "Vriscv_sim_top"),
+            "/home/pc/riscv-verilator-build/Vriscv_sim_top",
+        ]
+        _resolved_exe = next((p for p in _candidate_exes if p and os.path.isfile(p)), "/app/build/Vriscv_sim_top")
+        SIM_EXE = os.getenv("SIM_EXE", _resolved_exe)
+        SIM_DIR = os.getenv("SIM_DIR", _sim_dir if os.path.isdir(_sim_dir) else "/app/hardware/sim")
+        TRACE_DIR = os.getenv("TRACE_DIR", os.path.dirname(SIM_EXE) if os.path.dirname(SIM_EXE) else "/app/build")
 
     def __init__(self):
         self._proc: Optional[subprocess.Popen] = None
@@ -67,14 +94,13 @@ class SimulatorManager:
                 }
 
             try:
+                cmd = (
+                    ["wsl.exe", "-d", self.WSL_DISTRO, "--", self.SIM_EXE]
+                    if self.USE_WSL
+                    else [self.SIM_EXE]
+                )
                 self._proc = subprocess.Popen(
-                    [
-                        "wsl.exe",
-                        "-d",
-                        self.WSL_DISTRO,
-                        "--",
-                        self.SIM_EXE,
-                    ],
+                    cmd,
                     stdin=subprocess.PIPE,
                     stdout=subprocess.PIPE,
                     stderr=subprocess.PIPE,
@@ -260,15 +286,19 @@ class SimulatorManager:
             program_file = f"{self.SIM_DIR}/{program_file}"
 
         # Verify the file exists before attempting to load.
-        # Check via wsl.exe since the file lives in the Linux filesystem.
         try:
-            check = subprocess.run(
-                ["wsl.exe", "-d", self.WSL_DISTRO, "--", "test", "-f", program_file],
-                capture_output=True,
-                text=True,
-                timeout=5,
-            )
-            if check.returncode != 0:
+            if self.USE_WSL:
+                check = subprocess.run(
+                    ["wsl.exe", "-d", self.WSL_DISTRO, "--", "test", "-f", program_file],
+                    capture_output=True,
+                    text=True,
+                    timeout=5,
+                )
+                file_exists = (check.returncode == 0)
+            else:
+                file_exists = os.path.isfile(program_file)
+
+            if not file_exists:
                 return {
                     "status": "error",
                     "command": "load_program",
@@ -312,6 +342,22 @@ class SimulatorManager:
                 "error": str(exc),
             }
 
+    def _attach_state(self, out: Dict[str, Any]) -> Dict[str, Any]:
+        """Attach live register and data memory snapshots from hardware to response."""
+        try:
+            reg_resp = self.read_registers()
+            if reg_resp.get("status") == "ok":
+                out["registers"] = reg_resp.get("registers", [])
+        except Exception:
+            pass
+        try:
+            mem_resp = self.read_memory(0, 32)
+            if mem_resp.get("status") == "ok":
+                out["memory"] = mem_resp.get("memory", [])
+        except Exception:
+            pass
+        return out
+
     def reset(self) -> Dict[str, Any]:
         """Reset the processor pipeline."""
         try:
@@ -320,13 +366,14 @@ class SimulatorManager:
                 raise RuntimeError(resp.get("error", "reset failed"))
 
             data = resp.get("data", {})
-            return {
+            out = {
                 "status": "ok",
                 "command": "reset",
                 "cycles": data.get("cycles", 0),
                 "reset_applied": data.get("reset_applied", False),
                 "pipeline_state": data.get("pipeline_state", {}),
             }
+            return self._attach_state(out)
         except Exception as exc:
             return {
                 "status": "error",
@@ -345,12 +392,13 @@ class SimulatorManager:
                 raise RuntimeError(resp.get("error", "step failed"))
 
             data = resp.get("data", {})
-            return {
+            out = {
                 "status": "ok",
                 "command": "step",
                 "cycles": data.get("cycles", 0),
                 "pipeline_state": data.get("pipeline_state", {}),
             }
+            return self._attach_state(out)
         except Exception as exc:
             return {
                 "status": "error",
@@ -368,13 +416,14 @@ class SimulatorManager:
                 raise RuntimeError(resp.get("error", "run_cycles failed"))
 
             data = resp.get("data", {})
-            return {
+            out = {
                 "status": "ok",
                 "command": "run_cycles",
                 "cycles": data.get("cycles", 0),
                 "cycles_executed": data.get("cycles_executed", 0),
                 "pipeline_state": data.get("pipeline_state", {}),
             }
+            return self._attach_state(out)
         except Exception as exc:
             return {
                 "status": "error",
@@ -393,7 +442,7 @@ class SimulatorManager:
                 raise RuntimeError(resp.get("error", "run failed"))
 
             data = resp.get("data", {})
-            return {
+            out = {
                 "status": "ok",
                 "command": "run",
                 "cycles": data.get("cycles", 0),
@@ -401,6 +450,7 @@ class SimulatorManager:
                 "max_cycles": data.get("max_cycles", max_cycles),
                 "pipeline_state": data.get("pipeline_state", {}),
             }
+            return self._attach_state(out)
         except Exception as exc:
             return {
                 "status": "error",
@@ -503,7 +553,11 @@ class SimulatorManager:
             # trace_->open(filename) uses a relative path and writes to the
             # C++ process's CWD (the Windows project dir when launched via
             # wsl.exe), while the backend reads from /home/pc/riscv-verilator-build/.
-            wsl_filename = f"/home/pc/riscv-verilator-build/{filename}"
+            if self.USE_WSL:
+                wsl_filename = f"{self.TRACE_DIR}/{filename}"
+            else:
+                wsl_filename = os.path.join(self.TRACE_DIR, filename)
+                os.makedirs(os.path.dirname(wsl_filename), exist_ok=True)
             resp = self._send_raw(
                 {"command": "start_trace", "filename": wsl_filename}
             )

@@ -39,14 +39,26 @@ app = FastAPI(
 )
 
 
-# Allow the React development server to communicate with FastAPI.
+import os
+
+cors_origins_env = os.getenv("CORS_ORIGINS", "")
+if cors_origins_env:
+    allow_origins = [o.strip() for o in cors_origins_env.split(",") if o.strip()]
+else:
+    allow_origins = [
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+    ]
+
+cors_origin_regex = os.getenv(
+    "CORS_ORIGIN_REGEX",
+    r"^https:\/\/.*\.vercel\.app$"
+)
+
 app.add_middleware(
     CORSMiddleware,
-
-allow_origins=[
-    "http://localhost:3000",
-    "http://127.0.0.1:3000",
-    ],
+    allow_origins=allow_origins,
+    allow_origin_regex=cors_origin_regex,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -163,8 +175,6 @@ def sim_run_cycles(request: RunCyclesRequest):
 from .assembler import assemble
 import os
 
-ASSEMBLER_OUTPUT_DIR = "/mnt/d/RISC-V_Project/hardware/sim"
-
 
 @app.post("/api/assembler/assemble", response_model=AssembleResponse)
 def assemble_endpoint(request: AssembleRequest):
@@ -192,34 +202,49 @@ def assemble_and_load_endpoint(request: AssembleAndLoadRequest):
             "load_result": None,
         }
 
-    wsl_path = f"{ASSEMBLER_OUTPUT_DIR}/{program_file}"
-    win_path = f"D:\\\\RISC-V_Project\\\\hardware\\\\sim\\\\{program_file}"
-
-    # Write the hex file via WSL to ensure correct line endings.
     hex_content = "\n".join(result["machine_code"]) + "\n"
-    try:
-        import subprocess
-        proc = subprocess.run(
-            ["wsl.exe", "-d", "Ubuntu", "--", "tee", wsl_path],
-            input=hex_content,
-            capture_output=True,
-            text=True,
-            timeout=10,
-        )
-        if proc.returncode != 0:
-            raise RuntimeError(f"Failed to write file: {proc.stderr}")
-    except Exception as exc:
-        return {
-            "success": False,
-            "instruction_count": result["instruction_count"],
-            "instructions": result["instructions"],
-            "machine_code": result["machine_code"],
-            "errors": [{"line": 0, "category": "IO_ERROR", "message": str(exc), "source": ""}],
-            "load_result": None,
-        }
+    if simulator_manager.USE_WSL:
+        target_path = f"{simulator_manager.SIM_DIR}/{program_file}"
+        try:
+            import subprocess
+            proc = subprocess.run(
+                ["wsl.exe", "-d", simulator_manager.WSL_DISTRO, "--", "tee", target_path],
+                input=hex_content,
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            if proc.returncode != 0:
+                raise RuntimeError(f"Failed to write file via WSL: {proc.stderr}")
+        except Exception as exc:
+            return {
+                "success": False,
+                "instruction_count": result["instruction_count"],
+                "instructions": result["instructions"],
+                "machine_code": result["machine_code"],
+                "errors": [{"line": 0, "category": "IO_ERROR", "message": str(exc), "source": ""}],
+                "load_result": None,
+            }
+        load_target = program_file
+    else:
+        target_path = os.path.join(simulator_manager.SIM_DIR, program_file)
+        try:
+            os.makedirs(os.path.dirname(target_path), exist_ok=True)
+            with open(target_path, "w", encoding="utf-8", newline="\n") as f:
+                f.write(hex_content)
+        except Exception as exc:
+            return {
+                "success": False,
+                "instruction_count": result["instruction_count"],
+                "instructions": result["instructions"],
+                "machine_code": result["machine_code"],
+                "errors": [{"line": 0, "category": "IO_ERROR", "message": str(exc), "source": ""}],
+                "load_result": None,
+            }
+        load_target = target_path
 
     # Load through existing SimulatorManager.
-    load_result = simulator_manager.load_program(program_file)
+    load_result = simulator_manager.load_program(load_target)
 
     return {
         **result,
@@ -305,16 +330,42 @@ def trace_file(filename: str = "pipeline.vcd"):
             "error": "Invalid filename",
         }
 
-    wsl_path = f"/home/pc/riscv-verilator-build/{filename}"
-    try:
-        import subprocess
-        proc = subprocess.run(
-            ["wsl.exe", "-d", simulator_manager.WSL_DISTRO, "--", "cat", wsl_path],
-            capture_output=True,
-            text=True,
-            timeout=10,
-        )
-        if proc.returncode != 0:
+    if simulator_manager.USE_WSL:
+        wsl_path = f"{simulator_manager.TRACE_DIR}/{filename}"
+        try:
+            import subprocess
+            proc = subprocess.run(
+                ["wsl.exe", "-d", simulator_manager.WSL_DISTRO, "--", "cat", wsl_path],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            if proc.returncode != 0:
+                return {
+                    "status": "error",
+                    "filename": filename,
+                    "size_bytes": 0,
+                    "content": "",
+                    "error": f"Trace file not found: {filename}",
+                }
+            content = proc.stdout
+            return {
+                "status": "ok",
+                "filename": filename,
+                "size_bytes": len(content.encode("utf-8")),
+                "content": content,
+            }
+        except Exception as exc:
+            return {
+                "status": "error",
+                "filename": filename,
+                "size_bytes": 0,
+                "content": "",
+                "error": str(exc),
+            }
+    else:
+        trace_path = os.path.join(simulator_manager.TRACE_DIR, filename)
+        if not os.path.isfile(trace_path):
             return {
                 "status": "error",
                 "filename": filename,
@@ -322,18 +373,20 @@ def trace_file(filename: str = "pipeline.vcd"):
                 "content": "",
                 "error": f"Trace file not found: {filename}",
             }
-        content = proc.stdout
-        return {
-            "status": "ok",
-            "filename": filename,
-            "size_bytes": len(content.encode("utf-8")),
-            "content": content,
-        }
-    except Exception as exc:
-        return {
-            "status": "error",
-            "filename": filename,
-            "size_bytes": 0,
-            "content": "",
-            "error": str(exc),
-        }
+        try:
+            with open(trace_path, "r", encoding="utf-8", errors="replace") as f:
+                content = f.read()
+            return {
+                "status": "ok",
+                "filename": filename,
+                "size_bytes": len(content.encode("utf-8")),
+                "content": content,
+            }
+        except Exception as exc:
+            return {
+                "status": "error",
+                "filename": filename,
+                "size_bytes": 0,
+                "content": "",
+                "error": str(exc),
+            }

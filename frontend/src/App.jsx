@@ -101,15 +101,9 @@ function App() {
   // ----------------------------------------------------------------
   const probeBackendHealth = useCallback(async () => {
     try {
-      const res = await fetch('/api/status', { method: 'GET' });
-      if (res.ok) {
-        const data = await res.json();
-        setBackendConnected(true);
-        setVerilatorReady(Boolean(data?.connected));
-      } else {
-        setBackendConnected(false);
-        setVerilatorReady(false);
-      }
+      const info = await simulationService.checkBackend();
+      setBackendConnected(Boolean(info.backendAlive));
+      setVerilatorReady(Boolean(info.verilatorConnected));
     } catch {
       setBackendConnected(false);
       setVerilatorReady(false);
@@ -123,32 +117,199 @@ function App() {
   }, [probeBackendHealth]);
 
   // ----------------------------------------------------------------
-  // Single Step Execution
+  // Map Live Verilator RTL Execution State to Frontend Visuals
+  // ----------------------------------------------------------------
+  const mapRtlStateToUi = useCallback((rtlResult, prevSim, prog = []) => {
+    if (!rtlResult || rtlResult.status !== 'ok') {
+      return prevSim;
+    }
+
+    const ps = rtlResult.pipeline_state?.state || rtlResult.pipeline_state || {};
+    const cycle = typeof rtlResult.cycles === 'number' ? rtlResult.cycles : prevSim.cycle;
+
+    // 1. Hardware Registers (from Verilator debug_reg_data port)
+    const hardwareRegs = new Int32Array(32);
+    let modifiedReg = -1;
+    if (Array.isArray(rtlResult.registers) && rtlResult.registers.length === 32) {
+      for (let i = 0; i < 32; i++) {
+        const val = rtlResult.registers[i]?.value ?? 0;
+        hardwareRegs[i] = i === 0 ? 0 : val;
+        if (prevSim.registers && prevSim.registers[i] !== val && i !== 0) {
+          modifiedReg = i;
+        }
+      }
+    } else {
+      for (let i = 0; i < 32; i++) hardwareRegs[i] = prevSim.registers[i] || 0;
+    }
+    hardwareRegs[0] = 0; // x0 hardwired to zero in hardware
+
+    // 2. Hardware Data Memory (from Verilator debug_dmem_data port)
+    const hardwareMem = { ...(prevSim.memory || {}) };
+    let modifiedMem = -1;
+    if (Array.isArray(rtlResult.memory)) {
+      rtlResult.memory.forEach(item => {
+        if (item.value !== 0 || hardwareMem[item.address] !== undefined) {
+          if (hardwareMem[item.address] !== item.value) {
+            modifiedMem = item.address;
+          }
+          hardwareMem[item.address] = item.value;
+        }
+      });
+    }
+
+    // 3. Hardware Hazards & Pipeline Flow Signals
+    const stall = Boolean(ps.control_stall);
+    const redirect = Boolean(ps.redirect);
+    const pcSel = ps.pc_sel ?? 0;
+    const branchTaken = Boolean(redirect && pcSel === 1);
+
+    const getInstAtPc = (pc) => {
+      if (pc === null || pc === undefined) return null;
+      return prog.find(inst => inst.pc === pc) || null;
+    };
+
+    const ifInst = getInstAtPc(ps.fetch_pc);
+    const idInst = getInstAtPc(ps.if_id_pc);
+    const exInst = getInstAtPc(ps.ex_pc);
+
+    // 4. Construct 5-Stage Hardware Latches
+    const pipeline = {
+      IF: {
+        valid: cycle > 0,
+        pc: ps.fetch_pc ?? 0,
+        rawInstruction: ps.fetch_instruction ?? 0,
+        instruction: ifInst,
+        stageStatus: cycle === 0 ? 'not_started' : stall ? 'stalled' : 'active',
+        statusLabel: cycle === 0 ? 'Not Started' : stall ? 'Stalled / Held' : 'Active',
+        statusReason: cycle === 0 ? 'Simulation idle. Ready to start.' : stall ? 'PC held by hazard detection unit (load-use hazard).' : 'Instruction fetched from memory.'
+      },
+      ID: {
+        valid: cycle > 1 && !redirect,
+        pc: ps.if_id_pc ?? 0,
+        rawInstruction: ps.if_id_instruction ?? 0,
+        instruction: redirect ? null : idInst,
+        rs1: ps.id_rs1_data ?? 0,
+        rs2: ps.id_rs2_data ?? 0,
+        rd: exInst?.rd ?? 0,
+        imm: ps.id_imm ?? 0,
+        stageStatus: cycle <= 1 ? 'empty' : redirect ? 'flushed' : stall ? 'stalled' : 'active',
+        statusLabel: cycle <= 1 ? 'Empty' : redirect ? 'Flushed' : stall ? 'Stalled' : 'Active',
+        statusReason: cycle <= 1 ? 'Decode latch empty.' : redirect ? 'Flushed due to branch redirect.' : stall ? 'Decode stage stalled waiting for memory operand.' : 'Decoded registers & immediate operand.'
+      },
+      EX: {
+        valid: cycle > 2 && !stall && !redirect,
+        pc: ps.ex_pc ?? 0,
+        instruction: (stall || redirect) ? null : exInst,
+        aluResult: ps.mem_alu_result ?? 0,
+        branchTaken: branchTaken,
+        stageStatus: cycle <= 2 ? 'empty' : stall ? 'bubble' : redirect ? 'flushed' : 'active',
+        statusLabel: cycle <= 2 ? 'Empty' : stall ? 'Bubble' : redirect ? 'Flushed' : 'Active',
+        statusReason: cycle <= 2 ? 'Execution unit idle.' : stall ? 'Bubble injected into execute stage.' : redirect ? 'Branch redirect active.' : 'ALU execution complete.'
+      },
+      MEM: {
+        valid: cycle > 3,
+        memAddr: ps.mem_alu_result ?? 0,
+        memWriteData: ps.mem_store_data ?? 0,
+        memRead: Boolean(ps.mem_alu_result !== undefined && ps.ex_opcode === 0x03),
+        memWrite: Boolean(ps.mem_alu_result !== undefined && ps.ex_opcode === 0x23),
+        instruction: cycle > 3 ? (prog.find(inst => inst.rd === ps.mem_rd) || null) : null,
+        stageStatus: cycle <= 3 ? 'empty' : 'active',
+        statusLabel: cycle <= 3 ? 'Empty' : 'Active',
+        statusReason: cycle <= 3 ? 'Data memory bus inactive.' : 'Data memory access stage.'
+      },
+      WB: {
+        valid: cycle > 4 && Boolean(ps.wb_writeback_enable),
+        writeReg: ps.wb_writeback_rd ?? 0,
+        writeData: ps.wb_writeback_data ?? 0,
+        regWrite: Boolean(ps.wb_writeback_enable),
+        instruction: cycle > 4 && ps.wb_writeback_rd ? (prog.find(inst => inst.rd === ps.wb_writeback_rd) || null) : null,
+        stageStatus: cycle <= 4 ? 'empty' : ps.wb_writeback_enable ? 'active' : 'empty',
+        statusLabel: cycle <= 4 ? 'Empty' : ps.wb_writeback_enable ? 'Commit' : 'Idle',
+        statusReason: cycle <= 4 ? 'Writeback bus inactive.' : ps.wb_writeback_enable ? `Committed 0x${(ps.wb_writeback_data >>> 0).toString(16).toUpperCase()} to x${ps.wb_writeback_rd}.` : 'No writeback scheduled.'
+      }
+    };
+
+    // 5. Append Real RTL Waveform Telemetry Point
+    const newWaveformPoint = {
+      cycle,
+      clk: cycle % 2 === 0 ? 0 : 1,
+      pc: ps.fetch_pc ?? 0,
+      if_id_valid: cycle > 0 ? 1 : 0,
+      id_ex_valid: (cycle > 1 && !redirect) ? 1 : 0,
+      ex_mem_valid: (cycle > 2 && !stall) ? 1 : 0,
+      mem_wb_valid: cycle > 3 ? 1 : 0,
+      stall: stall ? 1 : 0,
+      flush: redirect ? 1 : 0,
+      fwdA: 'NONE',
+      fwdB: 'NONE',
+      alu_out: ps.mem_alu_result ?? 0,
+      reg_write: ps.wb_writeback_enable ? 1 : 0,
+      mem_read: ps.ex_opcode === 0x03 ? 1 : 0,
+      mem_write: ps.ex_opcode === 0x23 ? 1 : 0
+    };
+
+    const updatedWaveforms = [...(prevSim.waveforms || [])];
+    if (updatedWaveforms.length > 100) updatedWaveforms.shift();
+    updatedWaveforms.push(newWaveformPoint);
+
+    return {
+      cycle,
+      pc: ps.fetch_pc ?? prevSim.pc,
+      registers: hardwareRegs,
+      recentRegMod: modifiedReg !== -1 ? modifiedReg : prevSim.recentRegMod,
+      memory: hardwareMem,
+      recentMemMod: modifiedMem !== -1 ? modifiedMem : prevSim.recentMemMod,
+      pipeline,
+      hazards: {
+        stall,
+        flush: redirect,
+        forwardA: (ps.mem_rd && ps.mem_rd === (exInst?.rs1)) ? 'EX/MEM' : (ps.wb_writeback_rd && ps.wb_writeback_rd === (exInst?.rs1)) ? 'MEM/WB' : 'NONE',
+        forwardB: (ps.mem_rd && ps.mem_rd === (exInst?.rs2)) ? 'EX/MEM' : (ps.wb_writeback_rd && ps.wb_writeback_rd === (exInst?.rs2)) ? 'MEM/WB' : 'NONE'
+      },
+      waveforms: updatedWaveforms
+    };
+  }, []);
+
+  // ----------------------------------------------------------------
+  // Single Step Execution (Verilator RTL State Synchronization)
   // ----------------------------------------------------------------
   const handleStep = useCallback(async () => {
-    setClientSim(prev => simulateStep(prev, assembledProgram));
-
-    if (backendConnected) {
+    if (backendConnected && verilatorReady) {
       try {
-        await simulationService.step();
+        const rtlResult = await simulationService.step();
+        if (rtlResult && rtlResult.status === 'ok') {
+          setClientSim(prev => mapRtlStateToUi(rtlResult, prev, assembledProgram));
+          return;
+        }
       } catch (e) {
-        console.warn('Backend step sync error:', e.message);
+        console.warn('Backend step error, falling back to client emulator:', e.message);
       }
     }
-  }, [assembledProgram, backendConnected]);
+
+    // Offline emulation fallback only when backend is disconnected
+    setClientSim(prev => simulateStep(prev, assembledProgram));
+  }, [assembledProgram, backendConnected, verilatorReady, mapRtlStateToUi]);
 
   // ----------------------------------------------------------------
-  // Run Loop (Continuous Clock Ticking)
+  // Run Loop (Continuous Clock Ticking Driven by Verilator)
   // ----------------------------------------------------------------
   useEffect(() => {
     if (!isRunning) return;
 
+    let isCancelled = false;
     const intervalTime = Math.max(80, Math.floor(1000 / clockSpeed));
-    const intervalId = setInterval(() => {
-      handleStep();
-    }, intervalTime);
 
-    return () => clearInterval(intervalId);
+    const tick = async () => {
+      if (isCancelled) return;
+      await handleStep();
+    };
+
+    const intervalId = setInterval(tick, intervalTime);
+
+    return () => {
+      isCancelled = true;
+      clearInterval(intervalId);
+    };
   }, [isRunning, clockSpeed, handleStep]);
 
   // ----------------------------------------------------------------
@@ -163,15 +324,34 @@ function App() {
   // ----------------------------------------------------------------
   const handleReset = useCallback(async () => {
     setIsRunning(false);
-    setClientSim(createInitialState());
 
     if (backendConnected) {
       try {
-        await simulationService.reset();
+        const resetResult = await simulationService.reset();
+        if (resetResult && resetResult.status === 'ok') {
+          setClientSim(() => {
+            const fresh = createInitialState();
+            if (Array.isArray(resetResult.registers) && resetResult.registers.length === 32) {
+              const hardwareRegs = new Int32Array(32);
+              resetResult.registers.forEach(r => {
+                hardwareRegs[r.index] = r.index === 0 ? 0 : (r.value ?? 0);
+              });
+              fresh.registers = hardwareRegs;
+            }
+            if (resetResult.pipeline_state) {
+              const ps = resetResult.pipeline_state.state || resetResult.pipeline_state;
+              fresh.pc = ps.fetch_pc ?? 0;
+            }
+            return fresh;
+          });
+          return;
+        }
       } catch (e) {
         console.warn('Backend reset error:', e.message);
       }
     }
+
+    setClientSim(createInitialState());
   }, [backendConnected]);
 
   // ----------------------------------------------------------------
@@ -206,7 +386,6 @@ function App() {
 
     if (errors.length === 0) {
       setAssembledProgram(instructions);
-      setClientSim(createInitialState());
       setCheckStatus({
         valid: true,
         message: `✓ Program loaded: ${instructions.length} instructions in I-Mem. Ready to Run!`
@@ -216,10 +395,22 @@ function App() {
         try {
           await simulationService.start();
           await simulationService.assembleAndLoad(source, 'assembled.hex');
-          await simulationService.reset();
+          const resetRes = await simulationService.reset();
+          setClientSim(() => {
+            const fresh = createInitialState();
+            if (resetRes && resetRes.status === 'ok' && Array.isArray(resetRes.registers)) {
+              const regs = new Int32Array(32);
+              resetRes.registers.forEach(r => { regs[r.index] = r.index === 0 ? 0 : (r.value ?? 0); });
+              fresh.registers = regs;
+            }
+            return fresh;
+          });
         } catch (e) {
           console.warn('Backend load warning:', e.message);
+          setClientSim(createInitialState());
         }
+      } else {
+        setClientSim(createInitialState());
       }
     } else {
       setCheckStatus({

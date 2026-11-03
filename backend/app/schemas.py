@@ -75,6 +75,8 @@ class ResetResponse(BaseModel):
     cycles: int
     reset_applied: bool
     pipeline_state: Dict[str, Any]
+    registers: Optional[List[Dict[str, Any]]] = None
+    memory: Optional[List[Dict[str, Any]]] = None
 
 
 class StepRequest(BaseModel):
@@ -86,6 +88,8 @@ class StepResponse(BaseModel):
     command: str
     cycles: int
     pipeline_state: Dict[str, Any]
+    registers: Optional[List[Dict[str, Any]]] = None
+    memory: Optional[List[Dict[str, Any]]] = None
 
 
 class RunCyclesRequest(BaseModel):
@@ -104,6 +108,8 @@ class RunCyclesResponse(BaseModel):
     cycles: int
     cycles_executed: int
     pipeline_state: Dict[str, Any]
+    registers: Optional[List[Dict[str, Any]]] = None
+    memory: Optional[List[Dict[str, Any]]] = None
 
 
 class RunRequest(BaseModel):
@@ -119,6 +125,8 @@ class RunResponse(BaseModel):
     termination_reason: str
     max_cycles: int
     pipeline_state: Dict[str, Any]
+    registers: Optional[List[Dict[str, Any]]] = None
+    memory: Optional[List[Dict[str, Any]]] = None
 
 
 class RegisterInfo(BaseModel):

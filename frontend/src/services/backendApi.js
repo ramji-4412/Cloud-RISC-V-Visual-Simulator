@@ -71,7 +71,7 @@ async function request(endpoint, options = {}) {
 }
 
 export function fetchHealth() {
-  return request('/api/health');
+  return request('/api/health', { timeout: 45000 });
 }
 
 export function fetchStatus() {
